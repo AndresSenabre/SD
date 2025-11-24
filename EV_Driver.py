@@ -290,6 +290,41 @@ class DriverGUI:
         
         print("🎯 BOTÓN SEPARADO CREADO - DEBE SER VISIBLE")
 
+    def load_auto_services_file(self):
+        """Carga automática del fichero services/<driver_id>_services.txt"""
+        try:
+            filename = f"services/{self.driver_id}_services.txt"
+
+            if not os.path.exists(filename):
+                self.log_message(f"✗ Archivo automático no encontrado: {filename}", 'error')
+                return False
+
+            with open(filename, 'r') as f:
+                services = [line.strip() for line in f if line.strip()]
+
+            with self.service_lock:
+                self.service_queue = services
+
+            self.log_message(f"✓ Cargados {len(services)} servicios automáticos", 'success')
+
+            valid_cps, invalid_cps = self.validate_cps_in_queue()
+
+            for i, cp_id in enumerate(services, 1):
+                status = "✓" if cp_id in valid_cps else "✗"
+                self.log_message(f"  {i}. {cp_id} {status}", 
+                                'info' if cp_id in valid_cps else 'warning')
+
+            if invalid_cps:
+                self.log_message(f"⚠️ Advertencia: {len(invalid_cps)} CPs no están disponibles", 'warning')
+                self.log_message(f"   CPs inválidos: {', '.join(invalid_cps)}", 'warning')
+
+            self.update_queue_display()
+            return True
+
+        except Exception as e:
+            self.log_message(f"✗ Error al cargar archivo automático: {e}", 'error')
+            return False
+
     def create_controls_panel(self, parent):
         """Panel de controles"""
         frame = tk.LabelFrame(parent,
@@ -763,6 +798,10 @@ class DriverGUI:
         # Actualizar indicador visual
         self.update_central_status_display()
         
+        # Mostrar mensaje en log
+        self.log_message("="*60, 'error')
+        self.log_message("🔴 ALERTA: CENTRAL NO DISPONIBLE", 'error')
+        self.log_message("="*60, 'error')
 
     def handle_central_reconnected(self, event):
         """⚡ Manejar evento de recuperación de la CENTRAL"""
@@ -772,6 +811,10 @@ class DriverGUI:
         # Actualizar indicador visual
         self.update_central_status_display()
         
+        # Mostrar mensaje en log
+        self.log_message("="*60, 'success')
+        self.log_message("🟢 CENTRAL RECUPERADA Y OPERATIVA", 'success')
+        self.log_message("="*60, 'success')
 
     def handle_driver_event(self, event):
         """Manejar eventos del driver"""
@@ -1431,58 +1474,87 @@ class DriverGUI:
             messagebox.showerror("Error", f"No se pudo cargar el archivo:\n{e}")
 
     def start_automated(self):
-        """Iniciar servicios automáticos con mejor manejo de errores"""
+        """Iniciar servicios automáticos cargando archivo del driver automáticamente"""
         self.log_message("🔍 INICIANDO servicios automáticos...", 'highlight')
-        
+
+        # ----------------------------------------------------------
+        # 1) CARGA AUTOMÁTICA DEL ARCHIVO services/<driver>_services.txt
+        # ----------------------------------------------------------
+        if not self.load_auto_services_file():
+            messagebox.showerror(
+                "Error",
+                f"No se encontró el archivo automático:\n"
+                f"services/{self.driver_id}_services.txt"
+            )
+            return
+
+        # ----------------------------------------------------------
+        # 2) VALIDACIONES PREVIAS
+        # ----------------------------------------------------------
         try:
             with self.service_lock:
                 queue_empty = len(self.service_queue) == 0
                 has_current = self.current_service is not None
-            
-            self.log_message(f"🔍 Estado - Cola vacía: {queue_empty}, Servicio actual: {has_current}", 'info')
-            
+
+            self.log_message(
+                f"🔍 Estado - Cola vacía: {queue_empty}, Servicio actual: {has_current}",
+                'info'
+            )
+
             if queue_empty:
-                messagebox.showwarning("Cola vacía", 
-                                    "No hay servicios en cola.\n"
-                                    "Primero carga un archivo.")
+                messagebox.showwarning(
+                    "Cola vacía",
+                    "El archivo automático no contiene servicios válidos."
+                )
                 return
-            
+
             if has_current:
-                messagebox.showwarning("Servicio en curso", 
-                                    "Ya hay un servicio activo.\n"
-                                    "Los automáticos continuarán después.")
+                messagebox.showwarning(
+                    "Servicio en curso",
+                    "Ya hay un servicio activo.\n"
+                    "Los automáticos continuarán después."
+                )
                 return
-            
+
             # Verificar conexión Kafka
             if not self.check_kafka_connection():
-                messagebox.showerror("Error de Conexión", 
-                                "No hay conexión con Kafka. Verifica que el servidor esté funcionando.")
+                messagebox.showerror(
+                    "Error de Conexión",
+                    "No hay conexión con Kafka. Verifica que el servidor esté funcionando."
+                )
                 return
-            
+
+            # Validar CPs
             valid_cps, invalid_cps = self.validate_cps_in_queue()
             if invalid_cps:
-                self.log_message(f"⚠️ Advertencia: {len(invalid_cps)} CPs no disponibles:", 'warning')
+                self.log_message(
+                    f"⚠️ Advertencia: {len(invalid_cps)} CPs no disponibles:",
+                    'warning'
+                )
                 for cp_id in invalid_cps:
-                    self.log_message(f"   ✗ {cp_id} no está en la lista de CPs disponibles", 'warning')
-                
-                # Preguntar si continuar
-                if not messagebox.askyesno("CPs no disponibles", 
-                                        f"{len(invalid_cps)} CPs no están disponibles.\n"
-                                        f"CPs inválidos: {', '.join(invalid_cps)}\n\n"
-                                        "¿Deseas continuar con los CPs válidos?"):
+                    self.log_message(f"   ✗ {cp_id} no está disponible", 'warning')
+
+                if not messagebox.askyesno(
+                    "CPs no disponibles",
+                    f"{len(invalid_cps)} CPs no están disponibles.\n"
+                    f"CPs inválidos: {', '.join(invalid_cps)}\n\n"
+                    "¿Deseas continuar con los válidos?"
+                ):
                     return
-            
+
             self.log_message(f"✅ {len(valid_cps)} CPs válidos encontrados", 'success')
-            
             self.log_message("▶ Iniciando servicios automáticos...", 'highlight')
-            
-            # Usar after para evitar bloqueos de GUI
+
+            # ----------------------------------------------------------
+            # 3) INICIO DEL PROCESO AUTOMÁTICO
+            # ----------------------------------------------------------
             self.root.after(100, self.process_next_service)
-            
+
         except Exception as e:
             self.log_message(f"✗ ERROR en start_automated: {e}", 'error')
             import traceback
             self.log_message(f"Traceback: {traceback.format_exc()}", 'error')
+
 
     def refresh_cps(self):
         """Solicitar actualización de CPs a la central"""
